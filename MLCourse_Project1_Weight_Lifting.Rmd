@@ -1,0 +1,309 @@
+---
+title: "MLCourse_Project1_Weight_Lifting"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+## Executive Summary
+This project focused on developing a machine learning model to classify weightlifting exercise performance using sensor data. The process involved data preprocessing, feature selection, and dimensionality reduction via Principal Component Analysis (PCA), followed by training a Random Forest classifier. The model was evaluated on both validation and test datasets, achieving an accuracy of 99.64%.
+
+Key steps included removing irrelevant features, handling missing values, and addressing highly correlated variables. PCA revealed key sensor variables influencing exercise correctness. Performance metrics, including accuracy, precision, and recall, indicated that the model performed well across all classes, with particularly strong classification of correct exercises.
+
+The Random Forest model provides a reliable solution for classifying weightlifting exercise performance, with potential for further improvement through tuning or alternative models.
+
+
+## 1. Load & Preprocess the data
+
+**1.1 Load data**
+```{r}
+install.packages("ggcorrplot")
+library(caret)
+library(randomForest)
+library(e1071)
+library(rpart)
+library(rpart.plot)
+library(knitr)
+
+# Load the datasets correctly
+train_data <- read.csv("/home/rstudio/pml-training.csv", na.strings = c("NA", "", "#DIV/0!"))
+test_data <- read.csv("/home/rstudio/pml-testing.csv", na.strings = c("NA", "", "#DIV/0!"))
+
+```
+Via a quick analysis of the data we can see that some variables have low variance, and therefore can likely be removed.
+
+Additionally, to simplify the data set further, we can also remove highly correlated variables. As these add limited data richness to our results.
+
+
+**1.2 Data cleaning, preprocessing & feature selection**
+
+The train_data data set was preprocessed via the following steps:
+
+1. Remove near-zero variance predictors – Drops columns with little variability.
+2. Remove columns with excessive missing values – Keeps only columns with no NAs.
+3. Remove ID columns – Drops the first 7 columns, assuming they are identifiers.
+4. Convert the target variable (classe) to a factor – Ensures it's treated as categorical.
+5. Perform correlation analysis – Computes correlations among numeric features.
+6. Remove highly correlated features – Drops numeric features with correlation > 0.9.
+
+This streamlines the dataset by eliminating redundant, irrelevant, and highly correlated predictors for improved model performance.
+
+```{r, echo=FALSE}
+# Preprocess 1. Remove near-zero variance predictors
+nzv_cols <- nearZeroVar(train_data, saveMetrics = TRUE)
+train_data <- train_data[, !nzv_cols$nzv]
+
+# Preprocess 2. Remove columns with too many NAs
+train_data <- train_data[, colSums(is.na(train_data)) == 0]
+
+# Preprocess 3. Remove ID columns
+train_data <- train_data[, -(1:7)]
+
+# Preprocess 4. Convert `classe` to a factor
+train_data$classe <- as.factor(train_data$classe)
+
+# Select only numeric columns for correlation analysis
+numeric_cols <- sapply(train_data, is.numeric)
+corr_matrix <- cor(train_data[, numeric_cols], use = "pairwise.complete.obs")
+
+# Find & remove Highly Correlated Features 
+high_corr <- findCorrelation(corr_matrix, cutoff = 0.9)
+
+# Drop only from numeric columns, keeping other necessary variables (e.g., the target variable `classe`)
+train_data <- train_data[, c(numeric_cols)[-high_corr]]
+```
+
+
+```{r, echo=FALSE}
+initial_cols <- ncol(read.csv("/home/rstudio/pml-training.csv", na.strings = c("NA", "", "#DIV/0!")))
+
+# Remove near-zero variance predictors
+nzv_cols <- nearZeroVar(train_data, saveMetrics = TRUE)
+nzv_removed <- sum(nzv_cols$nzv)
+train_data <- train_data[, !nzv_cols$nzv]
+after_nzv <- ncol(train_data)
+
+# Remove columns with too many NAs
+before_na <- ncol(train_data)
+train_data <- train_data[, colSums(is.na(train_data)) == 0]
+after_na <- ncol(train_data)
+na_removed <- before_na - after_na
+
+# Remove ID columns
+before_id <- ncol(train_data)
+train_data <- train_data[, -(1:7)]
+after_id <- ncol(train_data)
+id_removed <- before_id - after_id
+
+# Remove Highly Correlated Features
+numeric_cols <- sapply(train_data, is.numeric)
+corr_matrix <- cor(train_data[, numeric_cols], use = "pairwise.complete.obs")
+high_corr <- findCorrelation(corr_matrix, cutoff = 0.9)
+before_corr <- ncol(train_data)
+train_data <- train_data[, c(numeric_cols)[-high_corr]]
+after_corr <- ncol(train_data)
+corr_removed <- before_corr - after_corr
+
+# Final column count
+final_cols <- ncol(train_data)
+
+# Print breakdown
+cat("Variables Removed:\n")
+cat("- Near Zero Variance:", initial_cols - after_nzv, "\n")
+cat("- Missing Values:", before_na - after_na, "\n")
+cat("- ID Columns:", before_id - after_id, "\n")
+cat("- Highly Correlated Features:", before_corr - after_corr, "\n")
+cat("Total Variables Removed:", initial_cols - final_cols, "\n")
+cat("Remaining Variables:", final_cols, "\n")
+
+
+
+```
+
+
+## 2. Undertake PCA
+
+By performing PCA, we can gain insight into which variables drive the greatest variance in the dataset, as indicated by their respective loading scores.
+
+From the analysis below, we observe that the following variables contribute significantly to the variation:
+
+- accel_belt_x
+- total_accel_belt
+- magnet_arm_y
+
+All three have positive loading scores, meaning that higher values of these variables contribute positively to this principal component. If this principal component correlates with correctly performed exercises, then higher values of these variables may be associated with correct execution. However, further analysis is required to establish this relationship.
+```{r, echo=FALSE}
+# Load required libraries
+library(ggplot2)
+
+# Remove non-numeric columns (e.g., ID, categorical variables like 'classe')
+numeric_data <- train_data[, sapply(train_data, is.numeric)]
+
+# Standardize the data (PCA requires normalization)
+scaled_data <- scale(numeric_data)
+
+# Perform PCA
+pca_result <- prcomp(scaled_data, center = TRUE, scale. = TRUE)
+
+# Scree plot: Visualizing variance explained
+explained_var <- pca_result$sdev^2 / sum(pca_result$sdev^2) * 100
+
+
+# Get signed loadings
+loadings_signed <- pca_result$rotation[, 1:3]
+
+# Identify the top 3 variables (including sign) for each component
+top_vars_with_signs <- apply(loadings_signed, 2, function(x) {
+  sorted_vars <- sort(x, decreasing = TRUE)  # Retain signs while sorting
+  top3 <- names(sorted_vars)[1:3]
+  signs <- sign(sorted_vars[1:3])  # Extract signs
+  values <- sorted_vars[1:3]  # Extract values
+  data.frame(Variable = top3, Loading = values, Sign = ifelse(signs == 1, "+", "-"))
+})
+
+# Print results for each PC
+for (i in 1:3) {
+  cat("\nTop 3 Variables for PC", i, ":\n")
+  print(top_vars_with_signs[[i]], row.names = FALSE)
+}
+
+
+
+ggplot(data.frame(PC = 1:length(explained_var), Variance = explained_var), aes(x = PC, y = Variance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_line(aes(y = cumsum(Variance)), color = "red", size = 1) +  # Cumulative variance
+  geom_point(aes(y = cumsum(Variance)), color = "red") +
+  labs(title = "Scree Plot: PCA Variance Explained", x = "Principal Component", y = "Variance Explained (%)") +
+  theme_minimal()
+
+# Create a data frame with PCA results
+pca_data <- data.frame(PC1 = pca_result$x[, 1], PC2 = pca_result$x[, 2])
+
+
+```
+## 3. Train model
+
+I have elected to utilise a random forest model as it typically performs well on classification tasks.
+
+I have also constructed a validation data set to complete an initial review of classification accuracy.
+
+The same preprocessing steps applied to the training set have been applied to the test set.
+
+```{r, echo=FALSE}
+set.seed(12345)
+inTrain <- createDataPartition(train_data$classe, p = 0.7, list = FALSE)
+training_set <- train_data[inTrain,]
+validation_set <- train_data[-inTrain,]
+
+set.seed(12345)
+rf_model <- randomForest(classe ~ ., data = training_set, importance = TRUE)
+
+# Apply the same preprocessing to the test set
+preprocessed_test_data <- test_data
+
+# 1. Remove near-zero variance predictors
+nzv_cols <- nearZeroVar(training_set, saveMetrics = TRUE)
+preprocessed_test_data <- preprocessed_test_data[, !nzv_cols$nzv]
+
+# 2. Remove columns with too many NAs
+na_cols <- colSums(is.na(training_set)) > 0
+preprocessed_test_data <- preprocessed_test_data[, !na_cols]
+
+# 3. Remove ID columns (assuming first 7 were removed)
+preprocessed_test_data <- preprocessed_test_data[, -(1:7)]
+
+# 4. Remove Highly Correlated Features
+numeric_cols <- sapply(training_set, is.numeric)
+corr_matrix <- cor(training_set[, numeric_cols], use = "pairwise.complete.obs")
+high_corr <- findCorrelation(corr_matrix, cutoff = 0.9)
+preprocessed_test_data <- preprocessed_test_data[, c(numeric_cols)[-high_corr]]
+
+# 5. Ensure test data has the same columns as the training set (excluding 'classe')
+common_cols <- intersect(names(training_set), names(preprocessed_test_data))
+preprocessed_test_data <- preprocessed_test_data[, common_cols]
+# Print the number of columns in the preprocessed test data
+cat("Number of columns in preprocessed test data:", ncol(preprocessed_test_data), "\n")
+
+```
+
+## 4. Evaluate model
+
+**4.1 Evaluate model on validation set**
+
+As you can see the accuracy of our model on the validation set is high, with good precision. 
+
+```{r}
+# Predict on the validation set
+validation_predictions <- predict(rf_model, validation_set)
+
+# Compute accuracy
+accuracy <- sum(validation_predictions == validation_set$classe) / nrow(validation_set) * 100
+print(paste("Validation Accuracy:", round(accuracy, 2), "%"))
+
+# Confusion Matrix
+conf_matrix <- confusionMatrix(validation_predictions, reference = validation_set$classe)
+print(conf_matrix)
+
+# Extract confusion matrix values
+cm <- conf_matrix$table
+# cm is a confusion matrix in a table format
+
+# Calculate Precision, Recall, and F1-Score for each class
+classes <- levels(validation_set$classe)
+for (class in classes) {
+  
+  # Get True Positives (TP), False Positives (FP), False Negatives (FN), True Negatives (TN)
+  TP <- cm[class, class]
+  FP <- sum(cm[, class]) - TP
+  FN <- sum(cm[class, ]) - TP
+  TN <- sum(cm) - TP - FP - FN
+  
+  # Precision = TP / (TP + FP)
+  precision <- TP / (TP + FP)
+  
+  # Recall = TP / (TP + FN)
+  recall <- TP / (TP + FN)
+  
+  # F1-Score = 2 * (Precision * Recall) / (Precision + Recall)
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  
+  # Print the results for each class
+  print(paste("Precision (", class, "):", round(precision, 2)))
+  print(paste("Recall (", class, "):", round(recall, 2)))
+  print(paste("F1-Score (", class, "):", round(f1_score, 2)))
+}
+
+
+
+```
+
+
+
+**4.2 Evaluate model on test set**
+
+The below are the predictions utilising the test set data from my trained random forest model:
+
+```{r}
+# Apply the same preprocessing to the test data
+test_data <- test_data[, names(training_set)[-ncol(training_set)]]
+
+# Predict on the test dataset
+test_predictions <- predict(rf_model, test_data)
+
+# Print the predicted class labels (A, B, C, D, etc.)
+print(test_predictions)
+
+
+
+```
+
+
+
+## 6. Conclusion
+
+This project developed a machine learning model to predict weightlifting exercise classes based on sensor data. The process involved data preprocessing, dimensionality reduction using PCA, and training a Random Forest classifier. After cleaning the data, including removing irrelevant features and handling correlations, the model achieved a high accuracy on the validation set. Precision, recall, and F1-score metrics confirmed strong classification performance. While the model is effective, future improvements could include hyperparameter tuning or exploring deep learning for more complex patterns.
